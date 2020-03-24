@@ -1,0 +1,25 @@
+<launch>
+
+  <param name="use_sim_time" value="true" />
+
+  <arg name="rviz_display" default="true"/>
+
+  <node name="livox_undistortion_node" pkg="lidar_undistortion"  type="lidar_undistortion" output="screen">
+
+    <!--<xsens发布频率，单位Hz>-->
+    <param name="xsens_frequency" value="100.0"/>
+
+    <!--<lidar消息传输滞后时间估计，单位ms(一般5～10ms左右)>-->
+    <param name="msg_delay_time" value="10.0"/>
+
+    <!--<rviz是否显示原始雷达数据>-->
+    <param name="display_raw_scan" value="true"/>
+
+  </node>
+
+  <group if="$(arg rviz_display)">
+     <node pkg="rviz" type="rviz" name="rviz"
+       args="-d $(find lidar_undistortion)/rviz/lidar_undistortion.rviz" />
+  </group>
+
+</launch>

@@ -1,0 +1,27 @@
+<launch>
+
+  <arg name="rviz_display" default="true"/>
+
+  <node name="livox_undistortion_node" pkg="livox_undistortion"  type="livox_undistortion" output="screen">
+
+    <!--<xsens发布频率，单位Hz>-->
+    <param name="xsens_frequency" value="200.0"/>
+
+    <!--<livox消息传输滞后时间估计，单位ms(一般5～10ms左右)>-->
+    <param name="msg_delay_time" value="8.0"/>
+
+    <!--<rviz是否显示原始雷达数据>-->
+    <param name="display_raw_scan" value="true"/>
+
+  </node>
+
+  <include file="$(find xsens_driver)/launch/xsens1.launch"/>
+
+  <include file="$(find livox_ros_driver)/launch/livox_lidar.launch"/>
+
+  <group if="$(arg rviz_display)">
+     <node pkg="rviz" type="rviz" name="rviz"
+       args="-d $(find livox_undistortion)/rviz/livox_undistortion.rviz" />
+  </group>
+
+</launch>
