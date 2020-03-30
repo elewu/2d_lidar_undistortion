@@ -6,6 +6,9 @@
 
   <node name="livox_undistortion_node" pkg="lidar_undistortion"  type="lidar_undistortion" output="screen">
 
+    <param name="lidar_topic" value="/scan"/>
+    <param name="imu_topic" value="/mti/sensor/imu"/>
+
     <!--<xsens发布频率，单位Hz>-->
     <param name="xsens_frequency" value="100.0"/>
 

@@ -18,11 +18,9 @@
 #include <fstream>
 #include <iostream>
 #include <cmath>
+#include <chrono>
 
 #include <boost/circular_buffer.hpp>
-
-
-#include <chrono>
 
 using namespace std;
 using namespace chrono;
@@ -37,6 +35,8 @@ public:
     {
       ros::NodeHandle nh_param("~");
 
+      nh_param.param<string>("lidar_topic", lidar_topic_, "/scan");
+      nh_param.param<string>("imu_topic", imu_topic_, "/mti/sensor/imu");
       nh_param.param<double>("imu_frequency", xsens_frequency, 100.0);
       nh_param.param<double>("msg_delay_time", msg_delay_time, 10.0);
       nh_param.param<bool>("display_raw_scan", display_raw_scan, false);
@@ -50,8 +50,7 @@ public:
 
       delay_duration = ros::Duration(msg_delay_time / 1000.0);
 
-      //stores 200 frames of imu data(1s)
-      imuCircularBuffer = ImuCircularBuffer(100);
+      imuCircularBuffer_ = ImuCircularBuffer(100);
     }
 
 
@@ -62,8 +61,8 @@ public:
 
     void ImuCallback(const sensor_msgs::ImuConstPtr& _imu_msg)
     {
-      imuCircularBuffer.push_front(*_imu_msg);
-      cout << "buffer size: " << imuCircularBuffer.size() << endl;
+      imuCircularBuffer_.push_front(*_imu_msg);
+      cout << "buffer size: " << imuCircularBuffer_.size() << endl;
     }
 
     void LidarCallback(const sensor_msgs::LaserScanConstPtr& _lidar_msg)
@@ -71,26 +70,29 @@ public:
 
       cout << "lidar message received" << endl;
 
-      //激光点的个数
+      // 激光点的个数
       int length = _lidar_msg->ranges.size();
-      cout << "point size: " << length << endl;
 
 
-      //当前激光帧从头到尾的时间
+      // 当前激光帧从头到尾的时间
+      // The overall scan time of current laserscan message(the duration from the first scan point to the last).
       frame_duration = ros::Duration(_lidar_msg->scan_time);
 
-      //估计第一个激光点的时刻
+      // 估计第一个激光点的时刻
+      // Estimate the timestamp of the first scan point.
       ros::Time lidar_timebase = ros::Time::now() - frame_duration - delay_duration;
 
       pcl::PointCloud<pcl::PointXYZI> pointcloud_raw_pcl;
       pcl::PointCloud<pcl::PointXYZI> pointcloud_test_pcl;
 
+      // 将LaserScan类型的数据转化为PCL点云格式
+      // Change sensor_msgs::LaserScan format to PCL pointcloud format.
       LaserScanToPointCloud(*_lidar_msg, pointcloud_raw_pcl);
 
-      //保证imu buffer中有足够多的数据
-      if (imuCircularBuffer.size() > frame_duration.toSec() * xsens_frequency * 1.5)
+      // 保证imu buffer中有足够多的数据
+      // Ensure that there is sufficient Imu data stored in imuCircularBuffer_.
+      if (imuCircularBuffer_.size() > frame_duration.toSec() * xsens_frequency * 1.5)
       {
-
         auto start = system_clock::now();
 
         sensor_msgs::PointCloud2 pointcloud_msg;
@@ -98,8 +100,7 @@ public:
         pcl::PointCloud<pcl::PointXYZI> pointcloud_pcl;
         pcl::PointXYZI point_xyzi;
 
-        geometry_msgs::Quaternion current_orientation = imuCircularBuffer[0].orientation;
-        Eigen::Quaternionf current_quat(current_orientation.w, current_orientation.x, current_orientation.y, current_orientation.z);
+        Eigen::Quaternionf current_quat = ImuToCurrentQuaternion(imuCircularBuffer_[0].orientation);
 
         for (int i = 0; i < length; i++)
         {
@@ -111,6 +112,7 @@ public:
 
           Eigen::Quaternionf point_quat;
 
+          // 如果成功获取当前扫描点的姿态
           if (getLaserPose(i, point_timestamp, point_quat) == true)
           {
             Eigen::Quaternionf delta_quat = current_quat.inverse() * point_quat;
@@ -138,39 +140,16 @@ public:
           pcl::toROSMsg(pointcloud_raw_pcl, pointcloud_raw_msg);
           pointcloud_raw_msg.header.frame_id = "laser";
           pcl_pub_origin_.publish(pointcloud_raw_msg);
-
-          for (int i = 0; i < 20; i++)
-          {
-            pointcloud_test_pcl.push_back(pointcloud_raw_pcl[719 - i]);
-          }
-          pcl::toROSMsg(pointcloud_test_pcl, pointcloud_raw_msg);
-          pointcloud_raw_msg.header.frame_id = "laser";
-          pcl_pub_test_.publish(pointcloud_raw_msg);
         }
 
         auto end = system_clock::now();
         auto duration = duration_cast<microseconds>(end - start);
-        cout <<  "spend "  << double(duration.count()) / 1000.0 << " miliseconds" << endl;
+        //cout <<  "spend "  << double(duration.count()) / 1000.0 << " miliseconds" << endl;
       }
       else
       {
         cout << "imu data less than 0.2s, waiting for next packet" << endl;
       }
-    }
-
-    Eigen::Matrix4d QuaternionToMatrix4d(geometry_msgs::Quaternion quat)
-    {
-      double x = quat.x;
-      double y = quat.y;
-      double z = quat.z;
-      double w = quat.w;
-
-      Eigen::Matrix4d transformT;
-      transformT << 1.0 - 2.0*y*y - 2.0*z*z, 2.0*x*y - 2.0*z*w      , 2.0*x*z + 2.0*y*w       , 0.0,
-                    2.0*x*y + 2.0*z*w      , 1.0 - 2.0*x*x - 2.0*z*z, 2.0*y*z - 2.0*x*w       , 0.0,
-                    2.0*x*z - 2.0*y*w      , 2.0*y*z + 2.0*x*w      , 1.0 - 2.0f*x*x - 2.0*y*y, 0.0,
-                    0.0                    , 0.0                    , 0.0                     , 1.0;
-      return transformT;
     }
 
     /**
@@ -193,19 +172,18 @@ public:
       if (point_index == 0)
       {
         int i = 0;
-        while (_timestamp < imuCircularBuffer[i].header.stamp)
+        while (_timestamp < imuCircularBuffer_[i].header.stamp)
         {
           i++;
         }
         index_front = i - 1;
         index_back = i;
         index_updated_flag = true;
-
       }
       else
       {
-        while (_timestamp > imuCircularBuffer[index_front].header.stamp
-               && _timestamp > imuCircularBuffer[index_back].header.stamp)
+        while (_timestamp > imuCircularBuffer_[index_front].header.stamp
+               && _timestamp > imuCircularBuffer_[index_back].header.stamp)
         {
           index_front--;
           index_back--;
@@ -222,21 +200,19 @@ public:
 
       if (index_updated_flag == true)
       {
-        cout << "index updated: " << index_front << " " << index_back << endl;
-        timestamp_front = imuCircularBuffer[index_front].header.stamp;
-        timestamp_back = imuCircularBuffer[index_back].header.stamp;
-        quat_front = Eigen::Quaternionf(imuCircularBuffer[index_front].orientation.w, imuCircularBuffer[index_front].orientation.x, imuCircularBuffer[index_front].orientation.y, imuCircularBuffer[index_front].orientation.z);
-        quat_back = Eigen::Quaternionf(imuCircularBuffer[index_back].orientation.w, imuCircularBuffer[index_back].orientation.x, imuCircularBuffer[index_back].orientation.y, imuCircularBuffer[index_back].orientation.z);
+        // cout << "index updated: " << index_front << " " << index_back << endl;
+        timestamp_front = imuCircularBuffer_[index_front].header.stamp;
+        timestamp_back = imuCircularBuffer_[index_back].header.stamp;
+        quat_front = Eigen::Quaternionf(imuCircularBuffer_[index_front].orientation.w, imuCircularBuffer_[index_front].orientation.x, imuCircularBuffer_[index_front].orientation.y, imuCircularBuffer_[index_front].orientation.z);
+        quat_back = Eigen::Quaternionf(imuCircularBuffer_[index_back].orientation.w, imuCircularBuffer_[index_back].orientation.x, imuCircularBuffer_[index_back].orientation.y, imuCircularBuffer_[index_back].orientation.z);
 
         index_updated_flag = false;
       }
 
       float alpha = (float)(_timestamp.toNSec() - timestamp_back.toNSec()) / (timestamp_front.toNSec() - timestamp_back.toNSec());
-      if (point_index > 700)
-      {
-        cout << "alpha:  " << alpha << endl;
-      }
-      //球面线性插值
+
+      // 球面线性插值
+      // Slerp.
       quat_out = quat_back.slerp(alpha, quat_front);
 
       return true;
@@ -267,6 +243,19 @@ public:
       }
     }
 
+    Eigen::Quaternionf ImuToCurrentQuaternion(geometry_msgs::Quaternion _quat)
+    {
+      tf::Quaternion current_tf_quat(_quat.x, _quat.y, _quat.z, _quat.w);
+
+      //提取航向角
+      double roll, pitch, yaw;
+      tf::Matrix3x3(current_tf_quat).getRPY(roll, pitch, yaw);
+
+      //建立当前航向的水平坐标系四元数
+      geometry_msgs::Quaternion horizontal_quat = tf::createQuaternionMsgFromRollPitchYaw(0.0, 0.0, yaw);
+
+      return Eigen::Quaternionf(horizontal_quat.w, horizontal_quat.x, horizontal_quat.y, horizontal_quat.z);
+    }
 
 public:
 
@@ -281,8 +270,9 @@ public:
 
     pcl::PointCloud<pcl::PointXYZRGB> visual_cloud_;
 
-    ImuCircularBuffer imuCircularBuffer;
+    ImuCircularBuffer imuCircularBuffer_;
 
+    string lidar_topic_, imu_topic_;
     double xsens_frequency, msg_delay_time;
     bool display_raw_scan;
 
@@ -293,7 +283,7 @@ int main(int argc,char ** argv)
 {
     ros::init(argc, argv, "lidar_undistortion");
 
-    LidarMotionCalibrator tmpLidarMotionCalib;
+    LidarMotionCalibrator myLidarMotionCalibrator;
 
     ros::spin();
 
