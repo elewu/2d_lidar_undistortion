@@ -21,3 +21,4 @@ A rosbag for test [2d_undistortion_example_1.bag](https://drive.google.com/file/
 `roslaunch lidar_undistortion lidar_undistortion_offline.launch`
 4. Press spacebar in the rosbag terminal to continue playing data.
 5. The results will be shown in rviz. Raw scan is displayed with red points and output is displayed with white points.
+![result](https://github.com/elewu/2d_lidar_undistortion/blob/master/pics/result.png)
