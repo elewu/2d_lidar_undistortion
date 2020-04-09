@@ -11,7 +11,7 @@ This ros package uses standard IMU message to correct motion distortion of a 2D 
 
 Subcribed topics: `sensor_msgs::LaserScan` and `sensor_msgs::Imu`
 
-A rosbag for test [2d_undistortion_example_1.bag](https://drive.google.com/file/d/1aic5VevWkU7q3yLxUEGD6XcEBUR9QVRZ/view?usp=sharing). The rosbag is recorded with [RPLIDAR A1](http://www.slamtec.com/en/Lidar/A1) and Xsens MTI-300.
+A rosbag for test [2d_undistortion_example_1.bag](https://drive.google.com/file/d/1aic5VevWkU7q3yLxUEGD6XcEBUR9QVRZ/view?usp=sharing). The rosbag is recorded with [RPLIDAR A1](http://www.slamtec.com/en/Lidar/A1) and Xsens MTI-300. (百度云链接[2d_undistortion_example_1.bag](https://pan.baidu.com/s/19Oqvab1HYZShCINIwoQ1Eg)，提取码`r00m`）
 #### Testing
 1. Start ros master.
 `roscore`
