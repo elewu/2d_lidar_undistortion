@@ -37,20 +37,20 @@ public:
 
       nh_param.param<string>("lidar_topic", lidar_topic_, "/scan");
       nh_param.param<string>("imu_topic", imu_topic_, "/mti/sensor/imu");
-      nh_param.param<double>("imu_frequency", xsens_frequency, 100.0);
-      nh_param.param<double>("msg_delay_time", msg_delay_time, 10.0);
-      nh_param.param<bool>("display_raw_scan", display_raw_scan, false);
+      nh_param.param<double>("imu_frequency", imu_frequency_, 100.0);
+      nh_param.param<double>("msg_delay_time", msg_delay_time_, 10.0);
+      nh_param.param<bool>("display_raw_scan", display_raw_scan_, false);
+      nh_param.param<bool>("pub_laserscan_msg", pub_laserscan_msg_, false);
 
-      lidar_sub_ = nh_.subscribe("/scan", 10, &LidarMotionCalibrator::LidarCallback, this);
-      imu_sub_ = nh_.subscribe("/mti/sensor/imu", 100, &LidarMotionCalibrator::ImuCallback, this);
+      lidar_sub_ = nh_.subscribe(lidar_topic_, 10, &LidarMotionCalibrator::LidarCallback, this);
+      imu_sub_ = nh_.subscribe(imu_topic_, 100, &LidarMotionCalibrator::ImuCallback, this);
 
-      pcl_pub_ = nh_.advertise<sensor_msgs::PointCloud2> ("pcl_output/after", 10);
-      pcl_pub_origin_ = nh_.advertise<sensor_msgs::PointCloud2> ("pcl_output/origin", 10);
-      pcl_pub_test_ = nh_.advertise<sensor_msgs::PointCloud2> ("pcl_output/test", 10);
+      pcl_pub_ = nh_.advertise<sensor_msgs::PointCloud2> ("/lidar_undistortion/after", 10);
+      pcl_pub_origin_ = nh_.advertise<sensor_msgs::PointCloud2> ("/lidar_undistortion/origin", 10);
 
-      delay_duration = ros::Duration(msg_delay_time / 1000.0);
+      delay_duration = ros::Duration(msg_delay_time_ / 1000.0);
 
-      imuCircularBuffer_ = ImuCircularBuffer(100);
+      imuCircularBuffer_ = ImuCircularBuffer((int)(imu_frequency_ * 1.5));
     }
 
 
@@ -62,36 +62,35 @@ public:
     void ImuCallback(const sensor_msgs::ImuConstPtr& _imu_msg)
     {
       imuCircularBuffer_.push_front(*_imu_msg);
-      cout << "buffer size: " << imuCircularBuffer_.size() << endl;
     }
 
     void LidarCallback(const sensor_msgs::LaserScanConstPtr& _lidar_msg)
     {
 
-      cout << "lidar message received" << endl;
+      //cout << "lidar message received" << endl;
 
       // 激光点的个数
       int length = _lidar_msg->ranges.size();
 
 
       // 当前激光帧从头到尾的时间
-      // The overall scan time of current laserscan message(the duration from the first scan point to the last).
+      // The overall scan time of current laserscan message(duration from the first scan point to the last).
       frame_duration = ros::Duration(_lidar_msg->scan_time);
 
       // 估计第一个激光点的时刻
       // Estimate the timestamp of the first scan point.
       ros::Time lidar_timebase = ros::Time::now() - frame_duration - delay_duration;
-
       pcl::PointCloud<pcl::PointXYZI> pointcloud_raw_pcl;
-      pcl::PointCloud<pcl::PointXYZI> pointcloud_test_pcl;
 
       // 将LaserScan类型的数据转化为PCL点云格式
       // Change sensor_msgs::LaserScan format to PCL pointcloud format.
-      LaserScanToPointCloud(*_lidar_msg, pointcloud_raw_pcl);
+      LaserScanToPointCloud(_lidar_msg, pointcloud_raw_pcl);
+
+      current_laserscan_msg_ = _lidar_msg;
 
       // 保证imu buffer中有足够多的数据
       // Ensure that there is sufficient Imu data stored in imuCircularBuffer_.
-      if (imuCircularBuffer_.size() > frame_duration.toSec() * xsens_frequency * 1.5)
+      if (imuCircularBuffer_.size() > frame_duration.toSec() * imu_frequency_ * 1.5)
       {
         auto start = system_clock::now();
 
@@ -122,7 +121,7 @@ public:
             point_xyzi.x = point_out(0);
             point_xyzi.y = point_out(1);
             point_xyzi.z = 0.0;
-            point_xyzi.intensity = 1.0;
+            point_xyzi.intensity = current_point.intensity;
             pointcloud_pcl.push_back(point_xyzi);
 
           }
@@ -135,7 +134,7 @@ public:
         pointcloud_msg.header.frame_id = "laser";
         pcl_pub_.publish(pointcloud_msg);
 
-        if (display_raw_scan == true)
+        if (display_raw_scan_ == true)
         {
           pcl::toROSMsg(pointcloud_raw_pcl, pointcloud_raw_msg);
           pointcloud_raw_msg.header.frame_id = "laser";
@@ -168,9 +167,11 @@ public:
       static Eigen::Quaternionf quat_front, quat_back;
 
       static bool index_updated_flag = false;
+      static bool predict_orientation_flag = false;
 
       if (point_index == 0)
       {
+        predict_orientation_flag = false;
         int i = 0;
         while (_timestamp < imuCircularBuffer_[i].header.stamp)
         {
@@ -182,7 +183,8 @@ public:
       }
       else
       {
-        while (_timestamp > imuCircularBuffer_[index_front].header.stamp
+        while (predict_orientation_flag == false
+               && _timestamp > imuCircularBuffer_[index_front].header.stamp
                && _timestamp > imuCircularBuffer_[index_back].header.stamp)
         {
           index_front--;
@@ -190,8 +192,10 @@ public:
 
           if (index_front < 0)
           {
-            cout << "loss imu data" << endl;
-            return false;
+            //use prediction
+            predict_orientation_flag = true;
+            index_front++;
+            index_back++;
           }
 
           index_updated_flag = true;
@@ -200,7 +204,7 @@ public:
 
       if (index_updated_flag == true)
       {
-        // cout << "index updated: " << index_front << " " << index_back << endl;
+        //cout << "index updated: " << index_front << " " << index_back << endl;
         timestamp_front = imuCircularBuffer_[index_front].header.stamp;
         timestamp_back = imuCircularBuffer_[index_back].header.stamp;
         quat_front = Eigen::Quaternionf(imuCircularBuffer_[index_front].orientation.w, imuCircularBuffer_[index_front].orientation.x, imuCircularBuffer_[index_front].orientation.y, imuCircularBuffer_[index_front].orientation.z);
@@ -211,6 +215,11 @@ public:
 
       float alpha = (float)(_timestamp.toNSec() - timestamp_back.toNSec()) / (timestamp_front.toNSec() - timestamp_back.toNSec());
 
+      if (alpha < 0)
+      {
+        return false;
+      }
+
       // 球面线性插值
       // Slerp.
       quat_out = quat_back.slerp(alpha, quat_front);
@@ -218,7 +227,7 @@ public:
       return true;
     }
 
-    void LaserScanToPointCloud(sensor_msgs::LaserScan _laser_scan, pcl::PointCloud<pcl::PointXYZI>& _pointcloud)
+    void LaserScanToPointCloud(sensor_msgs::LaserScan::ConstPtr _laser_scan, pcl::PointCloud<pcl::PointXYZI>& _pointcloud)
     {
       _pointcloud.clear();
       pcl::PointXYZI newPoint;
@@ -226,21 +235,27 @@ public:
       newPoint.intensity = 1.0;
       double newPointAngle;
 
-      int beamNum = _laser_scan.ranges.size();
-      for (int i = 11; i >= 0; i--)
+      int beamNum = _laser_scan->ranges.size();
+      for (int i = beamNum - 1; i >= 0; i--)
       {
-        newPointAngle = _laser_scan.angle_min + _laser_scan.angle_increment * i;
-        newPoint.x = _laser_scan.ranges[i] * cos(newPointAngle);
-        newPoint.y = _laser_scan.ranges[i] * sin(newPointAngle);
+        newPointAngle = _laser_scan->angle_min + _laser_scan->angle_increment * i;
+        newPoint.x = _laser_scan->ranges[i] * cos(newPointAngle);
+        newPoint.y = _laser_scan->ranges[i] * sin(newPointAngle);
         _pointcloud.push_back(newPoint);
       }
-      for (int i = beamNum - 1; i >= 17; i--)
+    }
+
+    sensor_msgs::LaserScan PointCloudToLaserScan(pcl::PointCloud<pcl::PointXYZI>& _pointcloud, ros::Time _timestamp)
+    {
+      sensor_msgs::LaserScan result_laserscan = *current_laserscan_msg_;
+
+      int beamNum = result_laserscan.ranges.size();
+      for (int i = 0; i < beamNum; i++)
       {
-        newPointAngle = _laser_scan.angle_min + _laser_scan.angle_increment * i;
-        newPoint.x = _laser_scan.ranges[i] * cos(newPointAngle);
-        newPoint.y = _laser_scan.ranges[i] * sin(newPointAngle);
-        _pointcloud.push_back(newPoint);
+        result_laserscan.ranges[i] = hypot(_pointcloud[beamNum - i - 1].x, _pointcloud[beamNum - i - 1].y);
       }
+
+      return result_laserscan;
     }
 
     Eigen::Quaternionf ImuToCurrentQuaternion(geometry_msgs::Quaternion _quat)
@@ -264,17 +279,17 @@ public:
     ros::Subscriber imu_sub_;
     ros::Publisher pcl_pub_;
     ros::Publisher pcl_pub_origin_;
-    ros::Publisher pcl_pub_test_;
 
     ros::Duration frame_duration, delay_duration;
-
-    pcl::PointCloud<pcl::PointXYZRGB> visual_cloud_;
 
     ImuCircularBuffer imuCircularBuffer_;
 
     string lidar_topic_, imu_topic_;
-    double xsens_frequency, msg_delay_time;
-    bool display_raw_scan;
+    double imu_frequency_, msg_delay_time_;
+    bool display_raw_scan_;
+    bool pub_laserscan_msg_;
+
+    sensor_msgs::LaserScan::ConstPtr current_laserscan_msg_;
 
 };
 

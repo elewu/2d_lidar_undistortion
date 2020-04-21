@@ -8,7 +8,7 @@
     <param name="imu_topic" value="/mti/sensor/imu"/>
 
     <!--<xsens发布频率，单位Hz>-->
-    <param name="xsens_frequency" value="100.0"/>
+    <param name="imu_frequency" value="100.0"/>
 
     <!--<lidar消息传输滞后时间估计，单位ms(一般5～10ms左右)>-->
     <param name="msg_delay_time" value="10.0"/>
