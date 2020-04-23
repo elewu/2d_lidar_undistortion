@@ -1,22 +1,16 @@
 #include <ros/ros.h>
 #include <tf/tf.h>
-#include <tf/transform_broadcaster.h>
-#include <tf/transform_listener.h>
-
 #include <sensor_msgs/LaserScan.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/PointCloud2.h>
-
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
-
+#include <pcl/filters/radius_outlier_removal.h>
 #include <Eigen/Dense>
-
 #include <iostream>
 #include <dirent.h>
 #include <fstream>
-#include <iostream>
 #include <cmath>
 #include <chrono>
 
@@ -38,9 +32,24 @@ public:
       nh_param.param<string>("lidar_topic", lidar_topic_, "/scan");
       nh_param.param<string>("imu_topic", imu_topic_, "/mti/sensor/imu");
       nh_param.param<double>("imu_frequency", imu_frequency_, 100.0);
-      nh_param.param<double>("msg_delay_time", msg_delay_time_, 10.0);
-      nh_param.param<bool>("display_raw_scan", display_raw_scan_, false);
-      nh_param.param<bool>("pub_laserscan_msg", pub_laserscan_msg_, false);
+      nh_param.param<double>("lidar_msg_delay_time", lidar_msg_delay_time_, 10.0);
+
+      nh_param.param<string>("output_pointcloud_frame_id", output_pointcloud_frame_id_, "laser");
+      nh_param.param<bool>("pub_raw_scan_pointcloud", pub_raw_scan_pointcloud_, false);
+      nh_param.param<bool>("scan_direction_clockwise", scan_direction_clockwise_, false);
+
+      nh_param.param<bool>("use_range_filter", use_range_filter_, false);
+      nh_param.param<double>("range_filter_min", range_filter_min_, 0.3);
+      nh_param.param<double>("range_filter_max", range_filter_max_, 12.0);
+
+      nh_param.param<bool>("use_angle_filter", use_angle_filter_, false);
+      nh_param.param<double>("angle_filter_min", angle_filter_min_, -2.5);
+      nh_param.param<double>("angle_filter_max", angle_filter_max_,  2.5);
+
+      nh_param.param<bool>("use_radius_outlier_filter", use_radius_outlier_filter_, false);
+      nh_param.param<double>("radius_outlier_filter_search_radius", radius_outlier_filter_search_radius_, 0.1);
+      nh_param.param<int>("radius_outlier_filter_min_neighbors", radius_outlier_filter_min_neighbors_, 1);
+
 
       lidar_sub_ = nh_.subscribe(lidar_topic_, 10, &LidarMotionCalibrator::LidarCallback, this);
       imu_sub_ = nh_.subscribe(imu_topic_, 100, &LidarMotionCalibrator::ImuCallback, this);
@@ -48,7 +57,7 @@ public:
       pcl_pub_ = nh_.advertise<sensor_msgs::PointCloud2> ("/lidar_undistortion/after", 10);
       pcl_pub_origin_ = nh_.advertise<sensor_msgs::PointCloud2> ("/lidar_undistortion/origin", 10);
 
-      delay_duration = ros::Duration(msg_delay_time_ / 1000.0);
+      delay_duration = ros::Duration(lidar_msg_delay_time_ / 1000.0);
 
       imuCircularBuffer_ = ImuCircularBuffer((int)(imu_frequency_ * 1.5));
     }
@@ -66,12 +75,8 @@ public:
 
     void LidarCallback(const sensor_msgs::LaserScanConstPtr& _lidar_msg)
     {
-
-      //cout << "lidar message received" << endl;
-
       // 激光点的个数
       int length = _lidar_msg->ranges.size();
-
 
       // 当前激光帧从头到尾的时间
       // The overall scan time of current laserscan message(duration from the first scan point to the last).
@@ -123,21 +128,25 @@ public:
             point_xyzi.z = 0.0;
             point_xyzi.intensity = current_point.intensity;
             pointcloud_pcl.push_back(point_xyzi);
-
           }
           else
           {
             break;
           }
         }
+
+        ApplyRangeFilter(pointcloud_pcl);
+        ApplyAngleFilter(pointcloud_pcl);
+        ApplyRadiusOutlierFilter(pointcloud_pcl);
+
         pcl::toROSMsg(pointcloud_pcl, pointcloud_msg);
-        pointcloud_msg.header.frame_id = "laser";
+        pointcloud_msg.header.frame_id = output_pointcloud_frame_id_;
         pcl_pub_.publish(pointcloud_msg);
 
-        if (display_raw_scan_ == true)
+        if (pub_raw_scan_pointcloud_ == true)
         {
           pcl::toROSMsg(pointcloud_raw_pcl, pointcloud_raw_msg);
-          pointcloud_raw_msg.header.frame_id = "laser";
+          pointcloud_raw_msg.header.frame_id = output_pointcloud_frame_id_;
           pcl_pub_origin_.publish(pointcloud_raw_msg);
         }
 
@@ -236,26 +245,27 @@ public:
       double newPointAngle;
 
       int beamNum = _laser_scan->ranges.size();
-      for (int i = beamNum - 1; i >= 0; i--)
+
+      if (scan_direction_clockwise_ == true)
       {
-        newPointAngle = _laser_scan->angle_min + _laser_scan->angle_increment * i;
-        newPoint.x = _laser_scan->ranges[i] * cos(newPointAngle);
-        newPoint.y = _laser_scan->ranges[i] * sin(newPointAngle);
-        _pointcloud.push_back(newPoint);
+        for (int i = beamNum - 1; i >= 0; i--)
+        {
+          newPointAngle = _laser_scan->angle_min + _laser_scan->angle_increment * i;
+          newPoint.x = _laser_scan->ranges[i] * cos(newPointAngle);
+          newPoint.y = _laser_scan->ranges[i] * sin(newPointAngle);
+          _pointcloud.push_back(newPoint);
+        }
       }
-    }
-
-    sensor_msgs::LaserScan PointCloudToLaserScan(pcl::PointCloud<pcl::PointXYZI>& _pointcloud, ros::Time _timestamp)
-    {
-      sensor_msgs::LaserScan result_laserscan = *current_laserscan_msg_;
-
-      int beamNum = result_laserscan.ranges.size();
-      for (int i = 0; i < beamNum; i++)
+      else
       {
-        result_laserscan.ranges[i] = hypot(_pointcloud[beamNum - i - 1].x, _pointcloud[beamNum - i - 1].y);
+        for (int i = 0; i < beamNum; i++)
+        {
+          newPointAngle = _laser_scan->angle_min + _laser_scan->angle_increment * i;
+          newPoint.x = _laser_scan->ranges[i] * cos(newPointAngle);
+          newPoint.y = _laser_scan->ranges[i] * sin(newPointAngle);
+          _pointcloud.push_back(newPoint);
+        }
       }
-
-      return result_laserscan;
     }
 
     Eigen::Quaternionf ImuToCurrentQuaternion(geometry_msgs::Quaternion _quat)
@@ -272,6 +282,55 @@ public:
       return Eigen::Quaternionf(horizontal_quat.w, horizontal_quat.x, horizontal_quat.y, horizontal_quat.z);
     }
 
+    void ApplyRangeFilter(pcl::PointCloud<pcl::PointXYZI>& _input)
+    {
+      if (use_range_filter_ == true)
+      {
+        pcl::PointCloud<pcl::PointXYZI> cloud;
+        for (int i = 0; i < _input.size(); i++)
+        {
+          float range = hypot(_input[i].x, _input[i].y);
+          if (range > range_filter_min_ && range < range_filter_max_)
+          {
+            cloud.push_back(_input[i]);
+          }
+        }
+        _input.swap(cloud);
+      }
+    }
+
+    void ApplyAngleFilter(pcl::PointCloud<pcl::PointXYZI>& _input)
+    {
+      if (use_angle_filter_ == true)
+      {
+        pcl::PointCloud<pcl::PointXYZI> cloud;
+        for (int i = 0; i < _input.size(); i++)
+        {
+          float angle = atan2(_input[i].y, _input[i].x);
+          if (angle > angle_filter_min_ && angle < angle_filter_max_)
+          {
+            cloud.push_back(_input[i]);
+          }
+        }
+        _input.swap(cloud);
+      }
+    }
+
+    void ApplyRadiusOutlierFilter(pcl::PointCloud<pcl::PointXYZI>& _input)
+    {
+      if (use_radius_outlier_filter_ == true)
+      {
+        pcl::PointCloud<pcl::PointXYZI> cloud;
+        pcl::RadiusOutlierRemoval<pcl::PointXYZI> sor;
+        sor.setInputCloud(_input.makeShared());
+        sor.setRadiusSearch(radius_outlier_filter_search_radius_);
+        sor.setMinNeighborsInRadius(radius_outlier_filter_min_neighbors_);
+        sor.setNegative(false);
+        sor.filter(cloud);
+        _input.swap(cloud);
+      }
+    }
+
 public:
 
     ros::NodeHandle nh_;
@@ -284,10 +343,22 @@ public:
 
     ImuCircularBuffer imuCircularBuffer_;
 
-    string lidar_topic_, imu_topic_;
-    double imu_frequency_, msg_delay_time_;
-    bool display_raw_scan_;
-    bool pub_laserscan_msg_;
+    string lidar_topic_, imu_topic_, output_pointcloud_frame_id_;
+    double imu_frequency_, lidar_msg_delay_time_;
+    bool pub_raw_scan_pointcloud_;
+
+    bool use_range_filter_;
+    double range_filter_min_;
+    double range_filter_max_;
+    bool scan_direction_clockwise_;
+
+    bool use_angle_filter_;
+    double angle_filter_min_;
+    double angle_filter_max_;
+
+    bool use_radius_outlier_filter_;
+    double radius_outlier_filter_search_radius_;
+    int radius_outlier_filter_min_neighbors_;
 
     sensor_msgs::LaserScan::ConstPtr current_laserscan_msg_;
 
