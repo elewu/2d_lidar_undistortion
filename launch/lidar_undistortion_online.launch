@@ -31,7 +31,7 @@
 
   <include file="$(find xsens_driver)/launch/xsens1.launch"/>
 
-  <include file="$(find livox_ros_driver)/launch/livox_lidar.launch"/>
+  <include file="$(find rplidar_ros)/launch/rplidar.launch"/>
 
   <group if="$(arg rviz_display)">
      <node pkg="rviz" type="rviz" name="rviz"

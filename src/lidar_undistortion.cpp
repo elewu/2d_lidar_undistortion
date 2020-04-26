@@ -241,7 +241,6 @@ public:
       _pointcloud.clear();
       pcl::PointXYZI newPoint;
       newPoint.z = 0.0;
-      newPoint.intensity = 1.0;
       double newPointAngle;
 
       int beamNum = _laser_scan->ranges.size();
@@ -253,6 +252,7 @@ public:
           newPointAngle = _laser_scan->angle_min + _laser_scan->angle_increment * i;
           newPoint.x = _laser_scan->ranges[i] * cos(newPointAngle);
           newPoint.y = _laser_scan->ranges[i] * sin(newPointAngle);
+          newPoint.intensity = _laser_scan->intensities[i];
           _pointcloud.push_back(newPoint);
         }
       }
@@ -263,6 +263,7 @@ public:
           newPointAngle = _laser_scan->angle_min + _laser_scan->angle_increment * i;
           newPoint.x = _laser_scan->ranges[i] * cos(newPointAngle);
           newPoint.y = _laser_scan->ranges[i] * sin(newPointAngle);
+          newPoint.intensity = _laser_scan->intensities[i];
           _pointcloud.push_back(newPoint);
         }
       }
