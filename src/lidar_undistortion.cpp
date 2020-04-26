@@ -34,8 +34,11 @@ public:
       nh_param.param<double>("imu_frequency", imu_frequency_, 100.0);
       nh_param.param<double>("lidar_msg_delay_time", lidar_msg_delay_time_, 10.0);
 
-      nh_param.param<string>("output_pointcloud_frame_id", output_pointcloud_frame_id_, "laser");
+      nh_param.param<string>("output_frame_id", output_frame_id_, "laser");
       nh_param.param<bool>("pub_raw_scan_pointcloud", pub_raw_scan_pointcloud_, false);
+      nh_param.param<bool>("pub_laserscan", pub_laserscan_, false);
+      nh_param.param<double>("laserscan_angle_increment", laserscan_angle_increment_, 0.01);
+
       nh_param.param<bool>("scan_direction_clockwise", scan_direction_clockwise_, false);
 
       nh_param.param<bool>("use_range_filter", use_range_filter_, false);
@@ -56,6 +59,7 @@ public:
 
       pcl_pub_ = nh_.advertise<sensor_msgs::PointCloud2> ("/lidar_undistortion/after", 10);
       pcl_pub_origin_ = nh_.advertise<sensor_msgs::PointCloud2> ("/lidar_undistortion/origin", 10);
+      laserscan_pub_ = nh_.advertise<sensor_msgs::LaserScan>("/lidar_undistortion/scan", 10);
 
       delay_duration = ros::Duration(lidar_msg_delay_time_ / 1000.0);
 
@@ -104,6 +108,7 @@ public:
         pcl::PointCloud<pcl::PointXYZI> pointcloud_pcl;
         pcl::PointXYZI point_xyzi;
 
+        current_output_timestamp = imuCircularBuffer_[0].header.stamp;
         Eigen::Quaternionf current_quat = ImuToCurrentQuaternion(imuCircularBuffer_[0].orientation);
 
         for (int i = 0; i < length; i++)
@@ -140,19 +145,24 @@ public:
         ApplyRadiusOutlierFilter(pointcloud_pcl);
 
         pcl::toROSMsg(pointcloud_pcl, pointcloud_msg);
-        pointcloud_msg.header.frame_id = output_pointcloud_frame_id_;
+        pointcloud_msg.header.frame_id = output_frame_id_;
         pcl_pub_.publish(pointcloud_msg);
 
         if (pub_raw_scan_pointcloud_ == true)
         {
           pcl::toROSMsg(pointcloud_raw_pcl, pointcloud_raw_msg);
-          pointcloud_raw_msg.header.frame_id = output_pointcloud_frame_id_;
+          pointcloud_raw_msg.header.frame_id = output_frame_id_;
           pcl_pub_origin_.publish(pointcloud_raw_msg);
+        }
+
+        if (pub_laserscan_ == true)
+        {
+          PublishLaserscan(pointcloud_pcl);
         }
 
         auto end = system_clock::now();
         auto duration = duration_cast<microseconds>(end - start);
-        //cout <<  "spend "  << double(duration.count()) / 1000.0 << " miliseconds" << endl;
+        cout <<  "Spend "  << double(duration.count()) / 1000.0 << " miliseconds" << endl;
       }
       else
       {
@@ -283,6 +293,71 @@ public:
       return Eigen::Quaternionf(horizontal_quat.w, horizontal_quat.x, horizontal_quat.y, horizontal_quat.z);
     }
 
+    void PublishLaserscan(pcl::PointCloud<pcl::PointXYZI>& _pointcloud)
+    {
+      float angle_min, angle_max;
+      if (use_angle_filter_ == true)
+      {
+        angle_min = angle_filter_min_;
+        angle_max = angle_filter_max_;
+      }
+      else
+      {
+        angle_min = current_laserscan_msg_->angle_min;
+        angle_max = current_laserscan_msg_->angle_max;
+      }
+
+      float range_min, range_max;
+      if (use_range_filter_ == true)
+      {
+        range_min = range_filter_min_;
+        range_max = range_filter_max_;
+      }
+      else
+      {
+        range_min = current_laserscan_msg_->range_min;
+        range_max = current_laserscan_msg_->range_max;
+      }
+
+      unsigned int beam_size = ceil((angle_max - angle_min) / laserscan_angle_increment_);
+
+      sensor_msgs::LaserScan output;
+      output.header.stamp = current_output_timestamp;
+      output.header.frame_id = output_frame_id_;
+      output.angle_min = angle_min;
+      output.angle_max = angle_max;
+      output.range_min = range_min;
+      output.range_max = range_max;
+      output.angle_increment = laserscan_angle_increment_;
+      output.time_increment = 0.0;
+      output.scan_time = 0.0;
+      output.ranges.assign(beam_size, std::numeric_limits<float>::quiet_NaN());
+      output.intensities.assign(beam_size, std::numeric_limits<float>::quiet_NaN());
+
+      for (auto point : _pointcloud.points)
+      {
+        float range = hypot(point.x, point.y);
+        float angle = atan2(point.y, point.x);
+        int index = (int)((angle - output.angle_min) / output.angle_increment);
+        if (index >= 0 && index < beam_size)
+        {
+          if (isnan(output.ranges[index]))
+          {
+            output.ranges[index] = range;
+          }
+          else
+          {
+            if (range < output.ranges[index])
+            {
+              output.ranges[index] = range;
+            }
+          }
+          output.intensities[index] = point.intensity;
+        }
+      }
+      laserscan_pub_.publish(output);
+    }
+
     void ApplyRangeFilter(pcl::PointCloud<pcl::PointXYZI>& _input)
     {
       if (use_range_filter_ == true)
@@ -339,14 +414,19 @@ public:
     ros::Subscriber imu_sub_;
     ros::Publisher pcl_pub_;
     ros::Publisher pcl_pub_origin_;
+    ros::Publisher laserscan_pub_;
 
     ros::Duration frame_duration, delay_duration;
+    ros::Time current_output_timestamp;
 
     ImuCircularBuffer imuCircularBuffer_;
 
-    string lidar_topic_, imu_topic_, output_pointcloud_frame_id_;
+    string lidar_topic_, imu_topic_, output_frame_id_;
     double imu_frequency_, lidar_msg_delay_time_;
     bool pub_raw_scan_pointcloud_;
+
+    bool pub_laserscan_;
+    double laserscan_angle_increment_;
 
     bool use_range_filter_;
     double range_filter_min_;
